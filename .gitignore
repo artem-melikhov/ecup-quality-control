@@ -1,0 +1,19 @@
+__pycache__/
+*.pyc
+.DS_Store
+
+# Фотографии, языковые веса и OCR-кэш хранятся локально.
+images/
+.ocr/
+.ocr-cache/
+submit/.ocr-cache/
+ocr.local.json
+submit/ocr.local.json
+
+# Архив отправки собирается отдельно.
+submission*.zip
+
+# Веса CLIP и кэш признаков фотографий.
+.vision/
+submit/.vision-cache/
+submit/clip_model/
