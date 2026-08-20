@@ -1,0 +1,100 @@
+{
+ "all7": {
+  "cols": [
+   "attr",
+   "tfidf",
+   "gemret",
+   "ret8",
+   "retemb",
+   "few",
+   "qret"
+  ],
+  "coef": [
+   0.397223,
+   0.450853,
+   0.061918,
+   0.067232,
+   0.068644,
+   0.314595,
+   -0.127261
+  ],
+  "intercept": 0.62009
+ },
+ "no_emb6": {
+  "cols": [
+   "attr",
+   "tfidf",
+   "gemret",
+   "ret8",
+   "few",
+   "qret"
+  ],
+  "coef": [
+   0.388568,
+   0.487079,
+   0.072767,
+   0.100948,
+   0.326657,
+   -0.088723
+  ],
+  "intercept": 0.624014
+ },
+ "no_emb_no_few": {
+  "cols": [
+   "attr",
+   "tfidf",
+   "gemret",
+   "ret8",
+   "qret"
+  ],
+  "coef": [
+   0.392246,
+   0.562374,
+   0.058655,
+   0.149874,
+   0.133498
+  ],
+  "intercept": 0.42339
+ },
+ "core4": {
+  "cols": [
+   "attr",
+   "tfidf",
+   "gemret",
+   "ret8"
+  ],
+  "coef": [
+   0.371848,
+   0.592281,
+   0.080617,
+   0.160189
+  ],
+  "intercept": 0.556652
+ },
+ "gem_only": {
+  "cols": [
+   "attr",
+   "tfidf",
+   "gemret"
+  ],
+  "coef": [
+   0.437878,
+   0.662064,
+   0.202331
+  ],
+  "intercept": 0.71429
+ },
+ "text_only": {
+  "cols": [
+   "attr",
+   "tfidf"
+  ],
+  "coef": [
+   0.673404,
+   0.709016
+  ],
+  "intercept": 0.612541
+ },
+ "bad_threshold": 0.325,
+ "prior_lv": 0.0339
+}
