@@ -2,7 +2,7 @@
 """Контейнерное решение задачи «Контроль качества» E-CUP 2026.
 
 БАД: TF-IDF с NB-взвешиванием и логистической регрессией.
-ЛВ: два текстовых классификатора с логистическим объединением.
+ЛВ: текстовые классификаторы и замороженные LLM с примерами из трейна.
 Готовые каналы объединяются стеком с учётом доступного времени.
 """
 import argparse
@@ -203,6 +203,125 @@ def main():
              "tfidf": tfidf_blocks(trl, sub, trl["label"].values, CFG1)}
         log(f"[{time.time()-t0:.0f}s] текстовые сигналы готовы")
 
+        try:
+            import torch
+            from transformers import AutoModelForCausalLM, AutoTokenizer
+            if not torch.cuda.is_available():
+                raise RuntimeError("нет GPU")
+            os.environ.setdefault("PYTORCH_ALLOC_CONF", "expandable_segments:True")
+            # ВАЖНО: оффлайн демонстрации отбирались по одной на neardup-ГРУППУ.
+            # Повторяем это здесь, иначе распределение сигнала разойдётся с тем,
+            # на котором обучены коэффициенты стека.
+            gmap = json.load(open(os.path.join(HERE, "lv_groups.json"), encoding="utf-8"))
+            tl = trl.copy()
+            tl["grp"] = [int(gmap.get(str(int(v)), -1)) for v in tl["id"]]
+            if (np.array(tl["grp"]) == -1).all():
+                key = lambda n, d: re.sub(r"\s+", " ", (str(n) + " " + str(d)).lower()).strip()
+                tl["grp"] = pd.factorize([key(n, d) for n, d in zip(tl["name"], tl["desc"])])[0]
+                log("группы из lv_groups.json не сопоставились — дедуплицирую по точному ключу")
+            tl = tl.reset_index(drop=True)
+            vec = TfidfVectorizer(analyzer="char_wb", ngram_range=(3, 5), min_df=2,
+                                  max_features=200_000, sublinear_tf=True)
+            Xc = normalize(vec.fit_transform((tl["name"].astype(str) + " " + tl["desc"]).str.lower()))
+            Xq = normalize(vec.transform((sub["name"].astype(str) + " " + sub["desc"]).str.lower()))
+            pi = np.where(tl["label"].values == 1)[0]; ni = np.where(tl["label"].values == 0)[0]
+            sp = (Xq @ Xc[pi].T).toarray(); sn = (Xq @ Xc[ni].T).toarray()
+            rng = np.random.default_rng(SEED)
+
+            grpv = tl["grp"].values
+
+            def demos_prompt(r, kk):
+                dm, seen = [], set()
+                for idxs, sims in ((pi, sp[r]), (ni, sn[r])):
+                    taken = 0
+                    for j in idxs[np.argsort(-sims)]:
+                        if taken >= kk: break
+                        if grpv[j] in seen: continue          # одна карточка на группу
+                        seen.add(grpv[j]); taken += 1
+                        dm.append((str(tl.loc[j, "name"]), str(tl.loc[j, "desc"])[:180], int(tl.loc[j, "label"])))
+                rng.shuffle(dm)
+                lines = [f"- {n} || {d} -> {'да' if l else 'нет'}" for n, d, l in dm]
+                return ("Примеры разметки похожих товаров:\n" + "\n".join(lines) +
+                        f"\n\nТовар: {sub.iloc[r]['name']}\nОписание: {str(sub.iloc[r]['desc'])[:400]}\n\nОтвет:")
+
+            def run_model(model_paths, passes, deadline, tag):
+                """Одна загрузка модели — несколько проходов. Экономит минуты на загрузке."""
+                path = next((p_ for p_ in model_paths if os.path.exists(p_)), model_paths[-1])
+                loc = os.path.exists(path)
+                tok = AutoTokenizer.from_pretrained(path, local_files_only=loc, trust_remote_code=True)
+                tok.padding_side = "left"
+                if tok.pad_token is None: tok.pad_token = tok.eos_token
+                mdl = AutoModelForCausalLM.from_pretrained(path, torch_dtype=torch.float16, device_map="auto",
+                                                           local_files_only=loc, trust_remote_code=True).eval()
+                yi = sorted({tok.encode(x, add_special_tokens=False)[0] for x in ["да", "Да", " да", " Да"]})
+                no = sorted({tok.encode(x, add_special_tokens=False)[0] for x in ["нет", "Нет", " нет", " Нет"]})
+                gb = torch.cuda.get_device_properties(0).total_memory / 1e9
+                MBT, MBS = (60000, 32) if gb > 40 else (6000, 3)
+                log(f"[{time.time()-t0:.0f}s] {tag}: модель {path}, батч до {MBT} токенов / {MBS}")
+                res = {}
+                for pname, sysmsg, userfn in passes:
+                    if time.time() - t0 > deadline:
+                        log(f"  {pname}: пропущен по дедлайну"); continue
+                    pr = []
+                    for r in range(len(sub)):
+                        msgs = [{"role": "system", "content": sysmsg}, {"role": "user", "content": userfn(r)}]
+                        try:
+                            pr.append(tok.apply_chat_template(msgs, tokenize=False, add_generation_prompt=True,
+                                                              enable_thinking=False))
+                        except TypeError:
+                            pr.append(tok.apply_chat_template(msgs, tokenize=False, add_generation_prompt=True))
+                    ln = [len(tok(x, add_special_tokens=False)["input_ids"]) for x in pr]
+                    out = np.full(len(sub), np.nan)
+                    order = sorted(range(len(sub)), key=lambda i2: ln[i2]); i2 = 0
+                    while i2 < len(order):
+                        if time.time() - t0 > deadline:
+                            log(f"  {pname}: дедлайн на {int(np.isfinite(out).sum())}/{len(sub)}"); break
+                        bt, mx = [], 0
+                        while i2 + len(bt) < len(order) and len(bt) < MBS:
+                            j2 = order[i2 + len(bt)]; nm2 = max(mx, ln[j2])
+                            if bt and nm2 * (len(bt) + 1) > MBT: break
+                            bt.append(j2); mx = nm2
+                        i2 += len(bt)
+                        enc = tok([pr[j2] for j2 in bt], return_tensors="pt", padding=True,
+                                  add_special_tokens=False).to("cuda")
+                        with torch.no_grad(), torch.amp.autocast("cuda", dtype=torch.float16):
+                            try:
+                                lg = mdl(**enc, logits_to_keep=1).logits[:, -1, :].float()
+                            except TypeError:
+                                lg = mdl(**enc, num_logits_to_keep=1).logits[:, -1, :].float()
+                        lp = torch.log_softmax(lg, dim=-1)
+                        sc = (torch.logsumexp(lp[:, yi], 1) - torch.logsumexp(lp[:, no], 1)).cpu().numpy()
+                        for j2, v in zip(bt, sc):
+                            out[j2] = 1 / (1 + np.exp(-v))
+                    if np.isfinite(out).all():
+                        res[pname] = out
+                        log(f"[{time.time()-t0:.0f}s] {pname}: готов")
+                    else:
+                        log(f"[{time.time()-t0:.0f}s] {pname}: неполный, отброшен")
+                del mdl; torch.cuda.empty_cache()
+                return res
+
+            subs = [subcat(n, d) for n, d in zip(sub["name"], sub["desc"])]
+            fs = json.load(open(os.path.join(HERE, "fewshot_submit.json"), encoding="utf-8"))
+            import importlib.util as _iu
+            _sp = _iu.spec_from_file_location("prompts", os.path.join(HERE, "prompts.py"))
+            _pm = _iu.module_from_spec(_sp); _sp.loader.exec_module(_pm)
+            INSTR = getattr(_pm, "SUBCAT_INSTRUCTIONS", {})
+
+            def fewuser(r):
+                b_ = subs[r]; d = fs.get(b_, [])
+                lines = [f"- {n} || {dd} -> {'да' if l else 'нет'}" for n, dd, l in d]
+                head = INSTR.get(b_, "")
+                return ((head + "\n\n" if head else "") +
+                        ("Примеры разметки этой подкатегории:\n" + "\n".join(lines) + "\n\n" if lines else "") +
+                        f"Название: {sub.iloc[r]['name']}\nОписание: {str(sub.iloc[r]['desc'])[:400]}\n\nОтвет:")
+
+            S.update(run_model(GEMMA, [("gemret", SYS_RET, lambda r: demos_prompt(r, 4)),
+                                       ("ret8", SYS_RET, lambda r: demos_prompt(r, 8))], DL_GEM, "gemma"))
+            S.update(run_model(QWEN, [("qret", SYS_RET, lambda r: demos_prompt(r, 4)),
+                                      ("few", _pm.SYSTEM_BASE, fewuser)], DL_QWEN, "qwen"))
+        except Exception as e:
+            log(f"LLM недоступна ({type(e).__name__}: {e})")
 
         p, stack_name = combine_signals(S, P)
         log(f"стек «{stack_name}»: {P[stack_name]['cols']}")
