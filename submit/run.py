@@ -6,6 +6,7 @@
 Готовые каналы объединяются стеком с учётом доступного времени.
 """
 import argparse
+from html.parser import HTMLParser
 import json
 import os
 import re
@@ -36,17 +37,21 @@ RULES = [
     ("Мангалы/грили/аксессуары", r"мангал|гриль|барбекю|шампур|казан|коптил|опахал|решетк|решётк"),
     ("Краски Холи", r"холи|краск"),
 ]
-COMMENTS = {
-    ("БАД", 1): ("Товар распознан как корректно размещённая биологически активная добавка: название и "
-                 "описание содержат характерные признаки БАД, карточка соответствует требованиям категории."),
-    ("БАД", 0): ("Карточка в категории БАД не подтверждена как корректная: по названию и описанию товар "
-                 "ближе к спортивному питанию или продукции без обязательной маркировки БАД."),
-    ("Легковоспламеняющиеся", 1): ("Товар отнесён к легковоспламеняющимся: по названию и описанию он содержит "
-                                   "горючее вещество, газ, топливо или пиротехнический заряд либо горючее "
-                                   "входит в комплект поставки."),
-    ("Легковоспламеняющиеся", 0): ("Признаков легковоспламеняющегося товара не найдено: это устройство или "
-                                   "изделие без горючего содержимого в комплекте, горючий материал здесь "
-                                   "не является самостоятельным товаром."),
+COMMENT_PREFIXES = {
+    ("БАД", 1): "По текстовым признакам модель отнесла товар к категории БАД.",
+    ("БАД", 0): "По текстовым признакам модель не подтвердила принадлежность товара к БАД.",
+    ("Легковоспламеняющиеся", 1): "Модель отнесла товар к легковоспламеняющимся по совокупности текстовых признаков.",
+    ("Легковоспламеняющиеся", 0): "По совокупности текстовых признаков модель не отнесла товар к легковоспламеняющимся.",
+}
+EVIDENCE_PATTERNS = {
+    "БАД": re.compile(
+        r"\bбад\b|биологически\s+активн\w*|dietary\s+supplement|food\s+supplement|"
+        r"витамин\w*|минерал\w*|спортивн\w*\s+питани\w*|протеин\w*", re.I
+    ),
+    "Легковоспламеняющиеся": re.compile(
+        r"пиротех\w*|спич\w*|топлив\w*|горюч\w*|\bгаз\w*|баллон\w*|"
+        r"бензин\w*|уголь\w*|угли\b|розжиг\w*|зажигал\w*|свеч\w*", re.I
+    ),
 }
 SYS_RET = ("Ты воспроизводишь историческую разметку маркетплейса: пометил бы разметчик этот товар как "
            "легковоспламеняющийся? Общий принцип: решает то, что физически есть в самом товаре или в его "
@@ -54,6 +59,75 @@ SYS_RET = ("Ты воспроизводишь историческую разм�
            "товар предназначен: пустые устройства для огня размечают как НЕ легковоспламеняющиеся. "
            "Ниже даны примеры разметки похожих товаров — ориентируйся прежде всего на них, "
            "они отражают реальную конвенцию. Ответ одним словом: да или нет.")
+
+
+class _CardTextParser(HTMLParser):
+    """Извлечь видимый текст, сохранив границы слов на месте HTML-тегов."""
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.parts = []
+        self.hidden = []
+
+    def handle_starttag(self, tag, attrs):
+        if tag in ("script", "style"):
+            self.hidden.append(tag)
+        if not self.hidden:
+            self.parts.append(" ")
+
+    def handle_endtag(self, tag):
+        if self.hidden and tag == self.hidden[-1]:
+            self.hidden.pop()
+        if not self.hidden:
+            self.parts.append(" ")
+
+    def handle_data(self, data):
+        if not self.hidden:
+            self.parts.append(data)
+
+
+def clean_text(value):
+    """Очистить разметку и HTML-сущности, затем нормализовать пробелы."""
+    if value is None or pd.isna(value):
+        return ""
+    parser = _CardTextParser()
+    parser.feed(str(value))
+    parser.close()
+    return re.sub(r"\s+", " ", "".join(parser.parts)).strip()
+
+
+def select_demo_indices(indices, similarities, groups, subcategories, target, limit, seen):
+    """Сначала соседи той же подкатегории, затем остальные; одна карточка на группу."""
+    ranked = np.argsort(-similarities, kind="stable")
+    if target != "Прочее":
+        same = subcategories[indices[ranked]] == target
+        ranked = np.concatenate((ranked[same], ranked[~same]))
+    selected = []
+    for j in indices[ranked]:
+        if len(selected) >= limit:
+            break
+        if groups[j] in seen:
+            continue
+        seen.add(groups[j])
+        selected.append(int(j))
+    return selected
+
+
+def build_comment(category, label, name, description):
+    """Добавить наблюдаемый фрагмент текста, не выдавая упоминание за доказательство."""
+    prefix = COMMENT_PREFIXES[(category, int(label))]
+    text = clean_text(name) + ". " + clean_text(description)
+    # В цитате не должно быть конкурсных тегов или переносов строк.
+    text = text.replace("<", "‹").replace(">", "›")
+    match = EVIDENCE_PATTERNS[category].search(text)
+    if match:
+        start = max(0, match.start() - 35)
+        end = min(len(text), match.end() + 45, start + 110)
+        excerpt = ("…" if start else "") + text[start:end] + ("…" if end < len(text) else "")
+        detail = f" В тексте карточки: «{excerpt}». Упоминание учитывается в контексте описания."
+    else:
+        detail = " Отдельные ключевые упоминания не выделены; решение принято по совокупности текстовых признаков."
+    return (prefix + detail)[:300]
 
 
 def subcat(name, desc):
@@ -69,7 +143,8 @@ def subcat(name, desc):
 
 
 def attr_field(h):
-    t = re.sub(r"<[^>]+>", "\n", str(h)).lower()
+    """Выделить атрибуты из уже очищенного описания."""
+    t = str(h).lower()
     return " ".join(t[m.start():m.start() + 140] for k in ATTR_KEYS for m in re.finditer(re.escape(k), t))
 
 
@@ -122,10 +197,11 @@ def log_odds(probabilities):
 def prepare_features(df):
     """Добавить текстовые поля, используемые классификаторами и поиском соседей."""
     df["desc_raw"] = df["description"].fillna("").astype(str)
-    df["desc"] = df["desc_raw"].str.replace(r"<[^>]+>", " ", regex=True).str.replace(r"\s+", " ", regex=True)
-    df["f_txt"] = (df["name"].astype(str) + " \n " + df["desc_raw"]).str.lower()
-    df["f_attr"] = [attr_field(x) for x in df["desc_raw"]]
-    df["f_nm"] = df["name"].astype(str).str.lower()
+    df["desc"] = df["desc_raw"].map(clean_text)
+    df["name_text"] = df["name"].map(clean_text)
+    df["f_txt"] = (df["name_text"] + " \n " + df["desc"]).str.lower()
+    df["f_attr"] = [attr_field(x) for x in df["desc"]]
+    df["f_nm"] = df["name_text"].str.lower()
 
 
 def select_bad_labels(probabilities):
@@ -161,9 +237,12 @@ def select_lv_labels(probabilities):
 
 
 def build_submission(test, predictions):
-    """Сформировать id/result с конкурсными тегами и шаблонами комментариев."""
+    """Сформировать id/result с конкурсными тегами и текстовыми наблюдениями."""
     results = [
-        f"<комментарий>{COMMENTS[(str(test.loc[i, 'category']), int(predictions.loc[i]))]}"
+        "<комментарий>" + build_comment(
+            str(test.loc[i, "category"]), predictions.loc[i],
+            test.loc[i, "name"], test.loc[i, "description"],
+        ) +
         f"<вердикт>{'не бан' if predictions.loc[i] == 1 else 'бан'}"
         for i in test.index
     ]
@@ -209,9 +288,7 @@ def main():
             if not torch.cuda.is_available():
                 raise RuntimeError("нет GPU")
             os.environ.setdefault("PYTORCH_ALLOC_CONF", "expandable_segments:True")
-            # ВАЖНО: оффлайн демонстрации отбирались по одной на neardup-ГРУППУ.
-            # Повторяем это здесь, иначе распределение сигнала разойдётся с тем,
-            # на котором обучены коэффициенты стека.
+            # Не повторяем почти-дубли в примерах для LLM.
             gmap = json.load(open(os.path.join(HERE, "lv_groups.json"), encoding="utf-8"))
             tl = trl.copy()
             tl["grp"] = [int(gmap.get(str(int(v)), -1)) for v in tl["id"]]
@@ -222,27 +299,28 @@ def main():
             tl = tl.reset_index(drop=True)
             vec = TfidfVectorizer(analyzer="char_wb", ngram_range=(3, 5), min_df=2,
                                   max_features=200_000, sublinear_tf=True)
-            Xc = normalize(vec.fit_transform((tl["name"].astype(str) + " " + tl["desc"]).str.lower()))
-            Xq = normalize(vec.transform((sub["name"].astype(str) + " " + sub["desc"]).str.lower()))
+            Xc = normalize(vec.fit_transform((tl["name_text"] + " " + tl["desc"]).str.lower()))
+            Xq = normalize(vec.transform((sub["name_text"] + " " + sub["desc"]).str.lower()))
             pi = np.where(tl["label"].values == 1)[0]; ni = np.where(tl["label"].values == 0)[0]
             sp = (Xq @ Xc[pi].T).toarray(); sn = (Xq @ Xc[ni].T).toarray()
             rng = np.random.default_rng(SEED)
 
             grpv = tl["grp"].values
+            train_subcats = np.array([subcat(n, d) for n, d in zip(tl["name_text"], tl["desc"])])
+            subs = [subcat(n, d) for n, d in zip(sub["name_text"], sub["desc"])]
 
             def demos_prompt(r, kk):
                 dm, seen = [], set()
                 for idxs, sims in ((pi, sp[r]), (ni, sn[r])):
-                    taken = 0
-                    for j in idxs[np.argsort(-sims)]:
-                        if taken >= kk: break
-                        if grpv[j] in seen: continue          # одна карточка на группу
-                        seen.add(grpv[j]); taken += 1
-                        dm.append((str(tl.loc[j, "name"]), str(tl.loc[j, "desc"])[:180], int(tl.loc[j, "label"])))
+                    chosen = select_demo_indices(
+                        idxs, sims, grpv, train_subcats, subs[r], kk, seen
+                    )
+                    for j in chosen:
+                        dm.append((str(tl.loc[j, "name_text"]), str(tl.loc[j, "desc"])[:180], int(tl.loc[j, "label"])))
                 rng.shuffle(dm)
                 lines = [f"- {n} || {d} -> {'да' if l else 'нет'}" for n, d, l in dm]
                 return ("Примеры разметки похожих товаров:\n" + "\n".join(lines) +
-                        f"\n\nТовар: {sub.iloc[r]['name']}\nОписание: {str(sub.iloc[r]['desc'])[:400]}\n\nОтвет:")
+                        f"\n\nТовар: {sub.iloc[r]['name_text']}\nОписание: {str(sub.iloc[r]['desc'])[:400]}\n\nОтвет:")
 
             def run_model(model_paths, passes, deadline, tag):
                 """Одна загрузка модели — несколько проходов. Экономит минуты на загрузке."""
@@ -301,7 +379,6 @@ def main():
                 del mdl; torch.cuda.empty_cache()
                 return res
 
-            subs = [subcat(n, d) for n, d in zip(sub["name"], sub["desc"])]
             fs = json.load(open(os.path.join(HERE, "fewshot_submit.json"), encoding="utf-8"))
             import importlib.util as _iu
             _sp = _iu.spec_from_file_location("prompts", os.path.join(HERE, "prompts.py"))
@@ -310,11 +387,11 @@ def main():
 
             def fewuser(r):
                 b_ = subs[r]; d = fs.get(b_, [])
-                lines = [f"- {n} || {dd} -> {'да' if l else 'нет'}" for n, dd, l in d]
+                lines = [f"- {clean_text(n)} || {clean_text(dd)} -> {'да' if l else 'нет'}" for n, dd, l in d]
                 head = INSTR.get(b_, "")
                 return ((head + "\n\n" if head else "") +
                         ("Примеры разметки этой подкатегории:\n" + "\n".join(lines) + "\n\n" if lines else "") +
-                        f"Название: {sub.iloc[r]['name']}\nОписание: {str(sub.iloc[r]['desc'])[:400]}\n\nОтвет:")
+                        f"Название: {sub.iloc[r]['name_text']}\nОписание: {str(sub.iloc[r]['desc'])[:400]}\n\nОтвет:")
 
             S.update(run_model(GEMMA, [("gemret", SYS_RET, lambda r: demos_prompt(r, 4)),
                                        ("ret8", SYS_RET, lambda r: demos_prompt(r, 8))], DL_GEM, "gemma"))
