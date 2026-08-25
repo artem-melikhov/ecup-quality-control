@@ -1,0 +1,4 @@
+{
+  "train_images_path": "/path/to/train/images",
+  "tessdata_dir": "/path/to/tessdata"
+}
