@@ -3,7 +3,8 @@
 
 БАД: TF-IDF с NB-взвешиванием и логистической регрессией.
 ЛВ: текстовые классификаторы и замороженные LLM с примерами из трейна.
-Готовые каналы объединяются стеком с учётом доступного времени.
+Фотографии дополнительно оценивает замороженный CLIP с обучаемой логистической регрессией.
+Готовые каналы объединяются с учётом доступного времени.
 """
 import argparse
 from html.parser import HTMLParser
@@ -18,8 +19,10 @@ import pandas as pd
 
 if __package__:
     from .ocr import ImageOCR, find_images_root, load_local_config
+    from .vision import CLIPEncoder, blend_visual, fit_visual_classifiers, load_features
 else:
     from ocr import ImageOCR, find_images_root, load_local_config
+    from vision import CLIPEncoder, blend_visual, fit_visual_classifiers, load_features
 from scipy import sparse
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.linear_model import LogisticRegression
@@ -119,7 +122,7 @@ def select_demo_indices(indices, similarities, groups, subcategories, target, li
     return selected
 
 
-def build_comment(category, label, name, description, ocr_text=""):
+def build_comment(category, label, name, description, ocr_text="", vision_used=False):
     """Добавить наблюдаемый фрагмент текста, не выдавая упоминание за доказательство."""
     prefix = COMMENT_PREFIXES[(category, int(label))]
     text = clean_text(name) + ". " + clean_text(description)
@@ -138,7 +141,8 @@ def build_comment(category, label, name, description, ocr_text=""):
         detail = f" {source}: «{excerpt}». Фрагмент приведён для проверки контекста."
     else:
         detail = " Отдельные ключевые упоминания не выделены; решение принято по совокупности текстовых признаков."
-    return (prefix + detail)[:300]
+    suffix = " Учтены визуальные признаки фотографий." if vision_used else ""
+    return (prefix + detail)[:300 - len(suffix)] + suffix
 
 
 def subcat(name, desc):
@@ -250,6 +254,56 @@ def attach_ocr(train, test, args, log):
         log(f"OCR недоступен ({type(error).__name__}: {error}). Используются доступные данные")
 
 
+def attach_vision(train, test, args, log):
+    """Обучить визуальные классификаторы на трейне и вернуть вероятности теста."""
+    predictions = np.full(len(test), np.nan)
+    if args.vision == "off" or args.vision_weight == 0:
+        log("Визуальный канал отключён")
+        return predictions
+    encoder = None
+    try:
+        config = load_local_config()
+        test_root = find_images_root(args.test_data_path, args.images_path or os.getenv("IMAGES_PATH"))
+        if test_root is None:
+            raise ValueError("Не найдены фото теста для CLIP")
+        model_path = (args.clip_model_path or os.getenv("CLIP_MODEL_PATH")
+                      or config.get("clip_model_path"))
+        if not model_path:
+            for candidate in (os.path.join(HERE, "clip_model"),
+                              os.path.join(_SH, "openai/clip-vit-base-patch32")):
+                if os.path.isdir(candidate):
+                    model_path = candidate
+                    break
+        if not model_path:
+            raise ValueError("Нет локальных весов CLIP. Укажите --clip-model-path")
+        encoder = CLIPEncoder(model_path, args.vision_cache_dir, args.vision_device, args.vision_batch_size)
+        test_features, test_valid = encoder.extract(test["id"].tolist(), test_root, args.vision_time_budget, log)
+        if not test_valid.any():
+            raise ValueError("CLIP не получил признаки ни одной тестовой фотографии")
+        prepared = args.train_vision_path or os.path.join(HERE, "train_vision.npz")
+        if args.train_vision_path or os.path.isfile(prepared):
+            train_features, train_valid = load_features(prepared, train["id"].tolist(), encoder.signature)
+            log(f"Готовые признаки CLIP трейна: {int(train_valid.sum())}/{len(train)}")
+        else:
+            train_path = args.train_images_path or os.getenv("TRAIN_IMAGES_PATH") or config.get("train_images_path")
+            train_root = find_images_root(os.path.join(HERE, "train_data.csv"), train_path)
+            if train_root is None:
+                raise ValueError("Нужны фото трейна или файл train_vision.npz")
+            train_features, train_valid = encoder.extract(train["id"].tolist(), train_root, args.vision_time_budget, log)
+        predictions = fit_visual_classifiers(train, test, train_features, train_valid,
+                                             test_features, test_valid, log)
+        if not np.isfinite(predictions).any():
+            raise ValueError("Недостаточно обучающих фото для визуального классификатора")
+    except (ImportError, OSError, ValueError, RuntimeError) as error:
+        if args.vision == "required":
+            raise
+        log(f"Визуальный канал недоступен ({type(error).__name__}: {error})")
+    finally:
+        if encoder is not None:
+            encoder.close()
+    return predictions
+
+
 def prepare_features(df, ocr_categories=()):
     """Добавить текстовые поля. OCR входит в линейную модель при наличии фото трейна."""
     df["desc_raw"] = df["description"].fillna("").astype(str)
@@ -315,6 +369,7 @@ def build_submission(test, predictions):
             str(test.loc[i, "category"]), predictions.loc[i],
             test.loc[i, "name"], test.loc[i, "description"],
             test.loc[i, "ocr_text"] if test.loc[i, "ocr_used"] else "",
+            bool(test.loc[i, "vision_used"]) if "vision_used" in test else False,
         ) +
         f"<вердикт>{'не бан' if predictions.loc[i] == 1 else 'бан'}"
         for i in test.index
@@ -336,12 +391,30 @@ def main():
     ap.add_argument("--ocr-workers", type=int, default=4)
     ap.add_argument("--ocr-time-budget", type=float, default=60,
                     help="Секунд на OCR каждого набора (тест/трейн), 0 без общего лимита")
+    ap.add_argument("--vision", choices=("auto", "off", "required"), default="auto")
+    ap.add_argument("--clip-model-path", help="Папка с локальными весами CLIP ViT-B/32")
+    ap.add_argument("--train-vision-path", help="Готовые признаки трейна: train_vision.npz")
+    ap.add_argument("--vision-cache-dir", default=os.path.join(HERE, ".vision-cache"))
+    ap.add_argument("--vision-device", choices=("auto", "cpu", "cuda", "mps"), default="auto")
+    ap.add_argument("--vision-batch-size", type=int, default=8)
+    ap.add_argument("--vision-time-budget", type=float, default=30,
+                    help="Секунд на извлечение признаков каждого набора, 0 без общего лимита")
+    ap.add_argument("--vision-weight", type=float, default=0.2,
+                    help="Вес визуальной вероятности в смеси с основной моделью")
+    ap.add_argument("--diagnostics-path", help="Необязательный CSV с вероятностью CLIP и признаками использования фото")
     a = ap.parse_args()
+    if (not np.isfinite(a.vision_weight) or not 0 <= a.vision_weight <= 1
+            or a.vision_time_budget < 0 or not np.isfinite(a.vision_time_budget)
+            or a.vision_batch_size < 1):
+        ap.error("Неверный вес, лимит времени или размер батча визуальной модели")
+    if a.vision == "required" and a.vision_weight == 0:
+        ap.error("Для --vision required нужен ненулевой --vision-weight")
     if a.ocr_time_budget < 0:
         ap.error("--ocr-time-budget не может быть отрицательным")
     t0 = time.time(); log = print
     np.random.seed(SEED)
-    P = json.load(open(os.path.join(HERE, "params.json"), encoding="utf-8"))
+    with open(os.path.join(HERE, "params.json"), encoding="utf-8") as stream:
+        P = json.load(stream)
     train = pd.read_csv(os.path.join(HERE, "train_data.csv"), index_col=0)
     test = pd.read_csv(a.test_data_path)
     log(f"train {len(train)}, test {len(test)}")
@@ -353,6 +426,8 @@ def main():
     log(f"OCR в линейных моделях: {sorted(ocr_categories) or 'не используется'}")
     for df in (train, test):
         prepare_features(df, ocr_categories)
+    visual_probabilities = attach_vision(train, test, a, log)
+    test["vision_used"] = np.isfinite(visual_probabilities) & (a.vision_weight > 0)
     preds = pd.Series(0, index=test.index, dtype=int)
 
     m_bad = (test["category"] == "БАД").values
@@ -360,6 +435,7 @@ def main():
         trb = train[train["category"] == "БАД"]
         p = tfidf_blocks_nb(trb, test.loc[m_bad], trb["label"].values, CFG1, C=4.0)
         log(f"[{time.time()-t0:.0f}s] БАД: NB-взвешенная модель обучена на {len(trb)}")
+        p = blend_visual(p, visual_probabilities[m_bad], a.vision_weight)
         sel = select_bad_labels(p)
         preds[m_bad] = sel
         log(f"[{time.time()-t0:.0f}s] БАД: {len(p)} карточек, взято {int(sel.sum())} (доля {BAD_RATE})")
@@ -380,7 +456,8 @@ def main():
                 raise RuntimeError("нет GPU")
             os.environ.setdefault("PYTORCH_ALLOC_CONF", "expandable_segments:True")
             # Не повторяем почти-дубли в примерах для LLM.
-            gmap = json.load(open(os.path.join(HERE, "lv_groups.json"), encoding="utf-8"))
+            with open(os.path.join(HERE, "lv_groups.json"), encoding="utf-8") as stream:
+                gmap = json.load(stream)
             tl = trl.copy()
             tl["grp"] = [int(gmap.get(str(int(v)), -1)) for v in tl["id"]]
             if (np.array(tl["grp"]) == -1).all():
@@ -470,7 +547,8 @@ def main():
                 del mdl; torch.cuda.empty_cache()
                 return res
 
-            fs = json.load(open(os.path.join(HERE, "fewshot_submit.json"), encoding="utf-8"))
+            with open(os.path.join(HERE, "fewshot_submit.json"), encoding="utf-8") as stream:
+                fs = json.load(stream)
             import importlib.util as _iu
             _sp = _iu.spec_from_file_location("prompts", os.path.join(HERE, "prompts.py"))
             _pm = _iu.module_from_spec(_sp); _sp.loader.exec_module(_pm)
@@ -499,6 +577,7 @@ def main():
         log(f"стек «{stack_name}»: {P[stack_name]['cols']}")
         if set(P[stack_name]["cols"]) - {"attr", "tfidf"}:
             test.loc[m_lv, "ocr_used"] |= sub["ocr_text"].str.len().gt(0).to_numpy()
+        p = blend_visual(p, visual_probabilities[m_lv], a.vision_weight)
         lp_ = select_lv_labels(p)
         preds[m_lv] = lp_
         log(f"[{time.time()-t0:.0f}s] ЛВ: DTA взял {lp_.sum()}/{len(lp_)} ({lp_.mean():.2%})")
@@ -509,11 +588,15 @@ def main():
     for i in test.index:
         k2 = norm_key(test.loc[i, "name"], test.loc[i, "desc_raw"])
         # Текстовый дубль не должен отменять новое свидетельство с фотографии.
-        if not test.loc[i, "ocr_used"] and k2 in dup.index:
+        if not (test.loc[i, "ocr_used"] or test.loc[i, "vision_used"]) and k2 in dup.index:
             m2 = dup.loc[k2]
             if m2 > 0.5 and preds.loc[i] != 1: preds.loc[i] = 1; n_over += 1
             elif m2 < 0.5 and preds.loc[i] != 0: preds.loc[i] = 0; n_over += 1
     log(f"дубль-оверрайдов: {n_over}")
+    if a.diagnostics_path:
+        pd.DataFrame({"id": test["id"].values, "category": test["category"].values,
+                      "clip_probability": visual_probabilities, "vision_used": test["vision_used"].values,
+                      "ocr_used": test["ocr_used"].values}).to_csv(a.diagnostics_path, index=False)
     submission = build_submission(test, preds)
     submission.to_csv(a.output_path, index=False)
     log(f"готово за {time.time()-t0:.0f}s: {len(submission)} строк")

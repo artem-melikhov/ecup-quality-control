@@ -1,4 +1,5 @@
 {
   "train_images_path": "/path/to/train/images",
-  "tessdata_dir": "/path/to/tessdata"
+  "tessdata_dir": "/path/to/tessdata",
+  "clip_model_path": "/path/to/clip-vit-base-patch32"
 }
