@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ecup-quality-control"
+version = "1.0.0"
+description = "Проверка карточек товаров по фотографиям и тексту"
+requires-python = ">=3.10"
+dependencies = [
+    "numpy",
+    "pandas",
+    "scipy",
+    "scikit-learn",
+    "Pillow>=10.1,<13",
+]
+
+[project.optional-dependencies]
+models = ["torch", "transformers", "accelerate", "huggingface-hub"]
+
+[project.scripts]
+ecup-quality = "ecup_quality.pipeline:main"
+ecup-ocr = "ecup_quality.ocr:main"
+ecup-vision = "ecup_quality.vision:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]

@@ -17,18 +17,14 @@ import time
 import numpy as np
 import pandas as pd
 
-if __package__:
-    from .ocr import ImageOCR, find_images_root, load_local_config
-    from .vision import CLIPEncoder, blend_visual, fit_visual_classifiers, load_features
-else:
-    from ocr import ImageOCR, find_images_root, load_local_config
-    from vision import CLIPEncoder, blend_visual, fit_visual_classifiers, load_features
+from .ocr import ImageOCR, find_images_root, load_local_config
+from .vision import CLIPEncoder, blend_visual, fit_visual_classifiers, load_features
+from .paths import CACHE, CONFIGS, MODELS, PROCESSED_DATA, TRAIN_DATA, TRAIN_OCR, TRAIN_VISION
 from scipy import sparse
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.linear_model import LogisticRegression
 from sklearn.preprocessing import normalize
 
-HERE = os.path.dirname(os.path.abspath(__file__))
 SEED = 42
 _SH = os.environ.get("SHARED_MODELS_PATH", "/shared_models")
 GEMMA = [os.path.join(_SH, "google/gemma-4-E4B-it"), "google/gemma-4-E4B-it"]
@@ -219,7 +215,7 @@ def attach_ocr(train, test, args, log):
         return
     try:
         config = load_local_config()
-        training_ocr_path = args.train_ocr_path or os.path.join(HERE, "train_ocr.csv")
+        training_ocr_path = args.train_ocr_path or str(TRAIN_OCR)
         if args.train_ocr_path or os.path.isfile(training_ocr_path):
             cached_train = pd.read_csv(training_ocr_path, dtype=str, keep_default_na=False)
             if not {"id", "ocr_text"} <= set(cached_train.columns) or cached_train["id"].duplicated().any():
@@ -234,7 +230,7 @@ def attach_ocr(train, test, args, log):
             log("Фото теста не найдены, используется только текст")
             return
         train_path = args.train_images_path or os.getenv("TRAIN_IMAGES_PATH") or config.get("train_images_path")
-        train_root = find_images_root(os.path.join(HERE, "train_data.csv"), train_path)
+        train_root = find_images_root(str(TRAIN_DATA), train_path)
         engine = ImageOCR(args.ocr_cache_dir,
                           args.tessdata_dir or os.getenv("TESSDATA_PREFIX") or config.get("tessdata_dir"),
                           args.ocr_languages, args.ocr_workers)
@@ -269,7 +265,7 @@ def attach_vision(train, test, args, log):
         model_path = (args.clip_model_path or os.getenv("CLIP_MODEL_PATH")
                       or config.get("clip_model_path"))
         if not model_path:
-            for candidate in (os.path.join(HERE, "clip_model"),
+            for candidate in (str(MODELS / "clip"),
                               os.path.join(_SH, "openai/clip-vit-base-patch32")):
                 if os.path.isdir(candidate):
                     model_path = candidate
@@ -280,13 +276,13 @@ def attach_vision(train, test, args, log):
         test_features, test_valid = encoder.extract(test["id"].tolist(), test_root, args.vision_time_budget, log)
         if not test_valid.any():
             raise ValueError("CLIP не получил признаки ни одной тестовой фотографии")
-        prepared = args.train_vision_path or os.path.join(HERE, "train_vision.npz")
+        prepared = args.train_vision_path or str(TRAIN_VISION)
         if args.train_vision_path or os.path.isfile(prepared):
             train_features, train_valid = load_features(prepared, train["id"].tolist(), encoder.signature)
             log(f"Готовые признаки CLIP трейна: {int(train_valid.sum())}/{len(train)}")
         else:
             train_path = args.train_images_path or os.getenv("TRAIN_IMAGES_PATH") or config.get("train_images_path")
-            train_root = find_images_root(os.path.join(HERE, "train_data.csv"), train_path)
+            train_root = find_images_root(str(TRAIN_DATA), train_path)
             if train_root is None:
                 raise ValueError("Нужны фото трейна или файл train_vision.npz")
             train_features, train_valid = encoder.extract(train["id"].tolist(), train_root, args.vision_time_budget, log)
@@ -385,7 +381,7 @@ def main():
     ap.add_argument("--train-images-path", help="Папка фото обучающих товаров")
     ap.add_argument("--train-ocr-path", help="CSV с заранее распознанным трейном: id, ocr_text")
     ap.add_argument("--ocr", choices=("auto", "off", "required"), default="auto")
-    ap.add_argument("--ocr-cache-dir", default=os.getenv("OCR_CACHE_DIR", os.path.join(HERE, ".ocr-cache")))
+    ap.add_argument("--ocr-cache-dir", default=os.getenv("OCR_CACHE_DIR", str(CACHE / "ocr")))
     ap.add_argument("--tessdata-dir", help="Папка rus.traineddata и eng.traineddata")
     ap.add_argument("--ocr-languages", default="rus+eng")
     ap.add_argument("--ocr-workers", type=int, default=4)
@@ -394,7 +390,7 @@ def main():
     ap.add_argument("--vision", choices=("auto", "off", "required"), default="auto")
     ap.add_argument("--clip-model-path", help="Папка с локальными весами CLIP ViT-B/32")
     ap.add_argument("--train-vision-path", help="Готовые признаки трейна: train_vision.npz")
-    ap.add_argument("--vision-cache-dir", default=os.path.join(HERE, ".vision-cache"))
+    ap.add_argument("--vision-cache-dir", default=str(CACHE / "vision"))
     ap.add_argument("--vision-device", choices=("auto", "cpu", "cuda", "mps"), default="auto")
     ap.add_argument("--vision-batch-size", type=int, default=8)
     ap.add_argument("--vision-time-budget", type=float, default=30,
@@ -413,9 +409,9 @@ def main():
         ap.error("--ocr-time-budget не может быть отрицательным")
     t0 = time.time(); log = print
     np.random.seed(SEED)
-    with open(os.path.join(HERE, "params.json"), encoding="utf-8") as stream:
+    with open(str(CONFIGS / "ensemble.json"), encoding="utf-8") as stream:
         P = json.load(stream)
-    train = pd.read_csv(os.path.join(HERE, "train_data.csv"), index_col=0)
+    train = pd.read_csv(str(TRAIN_DATA), index_col=0)
     test = pd.read_csv(a.test_data_path)
     log(f"train {len(train)}, test {len(test)}")
     attach_ocr(train, test, a, log)
@@ -456,7 +452,7 @@ def main():
                 raise RuntimeError("нет GPU")
             os.environ.setdefault("PYTORCH_ALLOC_CONF", "expandable_segments:True")
             # Не повторяем почти-дубли в примерах для LLM.
-            with open(os.path.join(HERE, "lv_groups.json"), encoding="utf-8") as stream:
+            with open(str(PROCESSED_DATA / "lv_groups.json"), encoding="utf-8") as stream:
                 gmap = json.load(stream)
             tl = trl.copy()
             tl["grp"] = [int(gmap.get(str(int(v)), -1)) for v in tl["id"]]
@@ -547,11 +543,9 @@ def main():
                 del mdl; torch.cuda.empty_cache()
                 return res
 
-            with open(os.path.join(HERE, "fewshot_submit.json"), encoding="utf-8") as stream:
+            with open(str(PROCESSED_DATA / "fewshot_examples.json"), encoding="utf-8") as stream:
                 fs = json.load(stream)
-            import importlib.util as _iu
-            _sp = _iu.spec_from_file_location("prompts", os.path.join(HERE, "prompts.py"))
-            _pm = _iu.module_from_spec(_sp); _sp.loader.exec_module(_pm)
+            from . import prompts as _pm
             INSTR = getattr(_pm, "SUBCAT_INSTRUCTIONS", {})
 
             def fewuser(r):

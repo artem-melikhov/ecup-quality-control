@@ -15,6 +15,8 @@ import tempfile
 import time
 import warnings
 
+from .paths import CACHE, LOCAL_CONFIG
+
 SCHEMA = 2
 IMAGE_SUFFIXES = {'.jpg', '.jpeg', '.png', '.webp', '.bmp', '.tif', '.tiff'}
 
@@ -33,11 +35,9 @@ def find_images_root(csv_path, explicit=None):
 
 
 def load_local_config():
-    here = Path(__file__).resolve().parent
-    for path in (here / 'ocr.local.json', here.parent / 'ocr.local.json'):
-        if path.is_file():
-            with path.open(encoding='utf-8') as stream:
-                return json.load(stream)
+    if LOCAL_CONFIG.is_file():
+        with LOCAL_CONFIG.open(encoding='utf-8') as stream:
+            return json.load(stream)
     return {}
 
 
@@ -219,7 +219,7 @@ def main():
     parser = argparse.ArgumentParser(description='Подготовить OCR-кэш до запуска моделей')
     parser.add_argument('--data-path', required=True)
     parser.add_argument('--images-path', required=True)
-    parser.add_argument('--cache-dir', default=str(Path(__file__).resolve().parent / '.ocr-cache'))
+    parser.add_argument('--cache-dir', default=str(CACHE / 'ocr'))
     parser.add_argument('--tessdata-dir')
     parser.add_argument('--languages', default='rus+eng')
     parser.add_argument('--workers', type=int, default=4)

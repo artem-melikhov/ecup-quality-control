@@ -1,19 +1,16 @@
 __pycache__/
-*.pyc
+*.py[cod]
 .DS_Store
+.venv/
+*.egg-info/
 
-# Фотографии, языковые веса и OCR-кэш хранятся локально.
+# Локальные фотографии, веса и кэши.
 images/
-.ocr/
-.ocr-cache/
-submit/.ocr-cache/
-ocr.local.json
-submit/ocr.local.json
+models/*
+!models/README.md
+.cache/
+configs/local.json
 
-# Архив отправки собирается отдельно.
-submission*.zip
-
-# Веса CLIP и кэш признаков фотографий.
-.vision/
-submit/.vision-cache/
-submit/clip_model/
+# Собранные архивы и результаты запусков.
+dist/
+outputs/

@@ -43,13 +43,13 @@ flowchart LR
 
 ### Визуальный классификатор
 
-Модуль `submit/vision.py` извлекает через CLIP вектор из 512 признаков для каждой фотографии. Веса CLIP заморожены. Названия, описания и OCR на этом этапе не используются.
+Модуль `src/ecup_quality/vision.py` извлекает через CLIP вектор из 512 признаков для каждой фотографии. Веса CLIP заморожены. Названия, описания и OCR на этом этапе не используются.
 
 Векторы отдельных фото нормализуются, усредняются и снова нормализуются. Получается один вектор на товар. Одинаковые изображения внутри карточки учитываются один раз.
 
 Поверх этих признаков обучается логистическая регрессия с балансировкой классов. Для БАД и легковоспламеняющихся товаров используются отдельные классификаторы. Обучение идёт только на метках трейна и товарах с доступными фотографиями. Для каждой категории нужны хотя бы два товара каждого класса.
 
-Признаки фотографий сохраняются в `submit/.vision-cache`. Кэш привязан к содержимому изображения, весам CLIP и настройкам обработки. Готовые признаки трейна хранятся в `train_vision.npz`, а классификаторы обучаются при каждом запуске на актуальных метках `train_data.csv`. После извлечения признаков CLIP освобождается перед загрузкой LLM.
+Признаки фотографий сохраняются в `.cache/vision`. Кэш привязан к содержимому изображения, весам CLIP и настройкам обработки. Готовые признаки трейна хранятся в `train_vision.npz`, а классификаторы обучаются при каждом запуске на актуальных метках `train_data.csv`. После извлечения признаков CLIP освобождается перед загрузкой LLM.
 
 CLIP оценивает изображение целиком. Отдельной детекции этикеток, предметов или значков опасности в решении нет.
 
@@ -71,7 +71,7 @@ OCR добавляется к признакам линейных моделей
 
 ### Объединение предсказаний
 
-Сигналы ЛВ объединяются логистическим стеком из `submit/params.json`. Затем к вероятностям основной модели каждой категории добавляется ответ визуального классификатора:
+Сигналы ЛВ объединяются логистическим стеком из `configs/ensemble.json`. Затем к вероятностям основной модели каждой категории добавляется ответ визуального классификатора:
 
 ```text
 p = (1 - vision_weight) * p_main + vision_weight * p_visual
@@ -89,27 +89,43 @@ p = (1 - vision_weight) * p_main + vision_weight * p_visual
 
 Для точных совпадений названия и описания с трейном используется метка большинства дублей, но только если в предсказании не участвовали OCR и визуальный классификатор. При равенстве голосов остаётся ответ модели.
 
-## Файлы
+## Структура проекта
 
 ```text
-Dockerfile                 # окружение для решения
-ocr.local.example.json     # пример локальных путей
-submit/
-  run.py                   # обучение, смешивание и предсказание
-  ocr.py                   # распознавание текста на фотографиях
-  vision.py                # CLIP и визуальные классификаторы
-  prompts.py               # инструкции для LLM
-  params.json              # коэффициенты стека
-  fewshot_submit.json      # фиксированные примеры
-  lv_groups.json           # группы почти-дублей
-  train_data.csv           # обучающие данные
-  metadata.json            # имя образа и команда запуска
-tests/
-  test_ocr.py               # проверки OCR
-  test_vision.py            # проверки визуального канала
+run.py                      # запуск решения
+src/ecup_quality/           # Python-код
+  pipeline.py               # обучение, предсказания и объединение моделей
+  vision.py                 # признаки CLIP и визуальные классификаторы
+  ocr.py                    # распознавание надписей на фото
+  prompts.py                # инструкции для LLM
+  paths.py                  # пути к данным, настройкам и весам
+configs/                    # настройки
+  ensemble.json             # коэффициенты стека
+  submission.json           # Docker-образ и команда запуска
+  local.example.json        # образец локальных путей
+data/
+  raw/                      # исходный обучающий CSV
+  processed/                # OCR, признаки CLIP и примеры для LLM
+models/                     # локальные веса, в Git не включаются
+reports/                    # покрытие данных и контрольные суммы
+scripts/
+  build_submission.py       # сборка конкурсного ZIP
+tests/                      # проверки моделей и сборки
+Dockerfile                  # окружение контейнера
+pyproject.toml              # зависимости и команды проекта
 ```
 
-Файлы `submit/train_ocr.csv`, `submit/train_vision.npz` и папка `submit/clip_model` подготовлены. Полный архив обучающих фотографий в отправку не входит. Команды ниже позволяют повторить подготовку.
+Код, данные и настройки лежат отдельно. В Git включены готовые данные для обучения, но не фотографии, веса и кэши. Архив отправки собирается в `dist/submission.zip` одной командой.
+
+## Установка
+
+```bash
+python -m pip install -e ".[models]"
+```
+
+После установки доступны команды `ecup-quality`, `ecup-ocr` и `ecup-vision`. Также можно запускать решение через `python run.py` из корня проекта.
+
+Файлы `data/processed/train_ocr.csv`, `data/processed/train_vision.npz` и локальные веса CLIP уже подготовлены. Команды ниже позволяют повторить подготовку.
 
 ## Подготовленные данные
 
@@ -124,7 +140,7 @@ tests/
 
 Готовые CSV и NPZ содержат все обучающие ID. Для товаров без фото сохраняется отсутствие визуальных данных. У 102 товаров с фотографиями OCR не выделил текста, но признаки CLIP для них есть.
 
-Состав набора, покрытие по категориям и контрольные суммы записаны в [preparation_report.json](preparation_report.json). Архив `submission.zip` собран с кодом, готовыми данными и весами CLIP.
+Состав набора, покрытие по категориям и контрольные суммы записаны в [preparation.json](reports/preparation.json). Архив `dist/submission.zip` собран с кодом, готовыми данными и весами CLIP.
 
 ## Подготовка OCR трейна
 
@@ -144,12 +160,12 @@ images/
 Распознать доступные фотографии трейна:
 
 ```bash
-python submit/ocr.py --data-path submit/train_data.csv \
+ecup-ocr --data-path data/raw/train_data.csv \
   --images-path /path/to/train/images \
-  --output-path submit/train_ocr.csv
+  --output-path data/processed/train_ocr.csv
 ```
 
-Команда работает без общего ограничения времени. Кэш сохраняется в `submit/.ocr-cache`. В CSV записываются столбцы `id` и `ocr_text`. Для своей папки языковых весов добавьте `--tessdata-dir /path/to/tessdata`.
+Команда работает без общего ограничения времени. Кэш сохраняется в `.cache/ocr`. В CSV записываются столбцы `id` и `ocr_text`. Для своей папки языковых весов добавьте `--tessdata-dir /path/to/tessdata`.
 
 ## Подготовка CLIP
 
@@ -160,7 +176,7 @@ python - <<'PY'
 from huggingface_hub import snapshot_download
 snapshot_download(
     "openai/clip-vit-base-patch32",
-    local_dir="submit/clip_model",
+    local_dir="models/clip",
     allow_patterns=["config.json", "preprocessor_config.json", "pytorch_model.bin", "README.md"],
 )
 PY
@@ -171,33 +187,33 @@ PY
 Подготовить признаки трейна:
 
 ```bash
-python submit/vision.py --data-path submit/train_data.csv \
+ecup-vision --data-path data/raw/train_data.csv \
   --images-path /path/to/train/images \
-  --model-path submit/clip_model \
-  --output-path submit/train_vision.npz
+  --model-path models/clip \
+  --output-path data/processed/train_vision.npz
 ```
 
 Подготовка идёт без общего дедлайна. В NPZ хранятся ID товаров, признаки, маска доступных фото и подпись модели. При загрузке проверяется соответствие весам CLIP, строки сопоставляются по ID. Метки и предсказания теста в этот файл не записываются. Для чтения не используется pickle.
 
-Путь к CLIP можно задать через `--clip-model-path`, переменную `CLIP_MODEL_PATH` или поле `clip_model_path` в `ocr.local.json`. Без явного пути проверяются `submit/clip_model` и `/shared_models/openai/clip-vit-base-patch32`.
+Путь к CLIP можно задать через `--clip-model-path`, переменную `CLIP_MODEL_PATH` или поле `clip_model_path` в `configs/local.json`. Без явного пути проверяются `models/clip` и `/shared_models/openai/clip-vit-base-patch32`.
 
-Локальные пути к фотографиям и весам можно записать в `ocr.local.json` по образцу `ocr.local.example.json`. Этот файл, фотографии, веса и кэши в Git не включаются.
+Локальные пути к фотографиям и весам можно записать в `configs/local.json` по образцу `configs/local.example.json`. Этот файл, фотографии, веса и кэши в Git не включаются.
 
 ## Запуск
 
 Из корня репозитория:
 
 ```bash
-python submit/run.py -i test.csv -o submit.csv \
+python run.py -i test.csv -o submit.csv \
   --images-path /path/to/test/images \
-  --clip-model-path submit/clip_model \
+  --clip-model-path models/clip \
   --ocr required \
   --vision required
 ```
 
 Поддерживаются длинные аргументы `--test_data_path` и `--output_path`. Входной CSV должен содержать `id`, `name`, `description`, `category`. Значения категории записываются как `БАД` или `Легковоспламеняющиеся`.
 
-Скрипт автоматически читает `submit/train_ocr.csv` и `submit/train_vision.npz`. Другие пути задаются через `--train-ocr-path` и `--train-vision-path`. Если готовых данных нет, папку фото трейна можно указать через `--train-images-path` или переменную `TRAIN_IMAGES_PATH`.
+Скрипт автоматически читает `data/processed/train_ocr.csv` и `data/processed/train_vision.npz`. Другие пути задаются через `--train-ocr-path` и `--train-vision-path`. Если готовых данных нет, папку фото трейна можно указать через `--train-images-path` или переменную `TRAIN_IMAGES_PATH`.
 
 Фото теста ищутся в папке `images` рядом с CSV. Явный путь задаётся через `--images-path` или переменную `IMAGES_PATH`. Фотографии трейна и теста указываются отдельно.
 
@@ -241,7 +257,7 @@ OCR получает до 60 секунд на тест и ещё до 60 сек
 
 ## Контейнер и отправка
 
-Dockerfile собирает окружение с Tesseract, Pillow и русскими и английскими языковыми данными. Имя для сборки `artemmelikhov/ecup-quality-ocr:1.0` указано в `submit/metadata.json`.
+Dockerfile собирает окружение с Tesseract, Pillow и русскими и английскими языковыми данными. Имя для сборки `artemmelikhov/ecup-quality-ocr:1.0` указано в `configs/submission.json`.
 
 ```bash
 docker build -t artemmelikhov/ecup-quality-ocr:1.0 .
@@ -250,16 +266,17 @@ docker push artemmelikhov/ecup-quality-ocr:1.0
 
 Если логин Docker Hub другой, замените имя в командах и поле `image` в `metadata.json`. Перед отправкой образ должен быть опубликован и доступен проверяющей системе.
 
-После подготовки OCR, признаков и весов архив собирается из корня репозитория:
+После подготовки OCR, признаков и весов архив собирается одной командой:
 
 ```bash
-(cd submit && zip -r ../submission.zip \
-  run.py ocr.py vision.py prompts.py params.json fewshot_submit.json \
-  lv_groups.json train_data.csv train_ocr.csv train_vision.npz \
-  metadata.json clip_model -x "*/.cache/*" "*/.git/*")
+python scripts/build_submission.py
 ```
 
-Код, CSV, NPZ и `metadata.json` должны лежать в корне ZIP, веса CLIP в папке `clip_model/`. CLIP не предполагается предустановленным в проверяющей системе, поэтому его веса включаются в архив. На проверку отправляется ZIP, Docker-образ скачивается по имени из `metadata.json`.
+Результат сохраняется в `dist/submission.zip`. Скрипт проверяет наличие нужных файлов и целостность ZIP. Локальная конфигурация, кэши и тесты в отправку не включаются.
+
+В корне архива находятся `run.py` и `metadata.json`, как требует проверяющая система. Папки `src`, `data`, `configs` и `models` сохраняют структуру проекта, поэтому в коде нет отдельных путей для локального запуска и контейнера. Веса CLIP входят в отправку.
+
+На проверку отправляется ZIP, Docker-образ скачивается по имени из `metadata.json`. В репозитории настройки этой отправки лежат в `configs/submission.json`.
 
 ## Проверки
 
@@ -267,6 +284,6 @@ docker push artemmelikhov/ecup-quality-ocr:1.0
 python -m unittest discover -s tests -v
 ```
 
-Проверяются ошибки чтения фото, EXIF-ориентация, кэш, объединение нескольких изображений, привязка признаков к ID, обучение визуального классификатора и влияние его вероятностей на выходной CSV. Метрики качества в этих тестах не считаются.
+Проверяются чтение фото, EXIF-ориентация, кэш, объединение изображений, привязка признаков к ID, обучение визуального классификатора, выходной CSV и сборка отправки. Метрики качества в этих тестах не считаются.
 
 Seed зафиксирован на `42`. На предсказания влияют состав входного набора, покрытие фотографиями, доступность моделей и время обработки.

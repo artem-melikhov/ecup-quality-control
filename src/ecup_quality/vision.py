@@ -10,6 +10,8 @@ import warnings
 import numpy as np
 from sklearn.linear_model import LogisticRegression
 
+from .paths import CACHE, TRAIN_VISION
+
 SCHEMA = 1
 DIMENSION = 512
 SUFFIXES = {'.jpg', '.jpeg', '.png', '.webp', '.bmp', '.tif', '.tiff'}
@@ -282,8 +284,8 @@ def main():
     parser.add_argument('--data-path', required=True)
     parser.add_argument('--images-path', required=True)
     parser.add_argument('--model-path', required=True, help='Локальная папка CLIP ViT-B/32')
-    parser.add_argument('--output-path', default=str(Path(__file__).resolve().parent / 'train_vision.npz'))
-    parser.add_argument('--cache-dir', default=str(Path(__file__).resolve().parent / '.vision-cache'))
+    parser.add_argument('--output-path', default=str(TRAIN_VISION))
+    parser.add_argument('--cache-dir', default=str(CACHE / 'vision'))
     parser.add_argument('--device', choices=('auto', 'cpu', 'cuda', 'mps'), default='auto')
     parser.add_argument('--batch-size', type=int, default=8)
     parser.add_argument('--time-budget', type=float, default=0)
