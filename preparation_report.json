@@ -1,0 +1,48 @@
+{
+  "training_rows": 12971,
+  "rows_with_available_photos": 4314,
+  "rows_without_photos": 8657,
+  "rows_with_recognized_text": 4212,
+  "rows_with_clip_features": 4314,
+  "clip_feature_dimension": 512,
+  "clip_signature": "67e896f05c7f11bbb5e6082d730b21d6cab2a94d9ffa5a0a04d46a77b0c593f8",
+  "by_category_and_label": [
+    {
+      "category": "БАД",
+      "label": 0,
+      "rows": 1905,
+      "with_images": 672,
+      "with_ocr_text": 671,
+      "with_clip_features": 672
+    },
+    {
+      "category": "БАД",
+      "label": 1,
+      "rows": 5564,
+      "with_images": 1860,
+      "with_ocr_text": 1843,
+      "with_clip_features": 1860
+    },
+    {
+      "category": "Легковоспламеняющиеся",
+      "label": 0,
+      "rows": 5304,
+      "with_images": 1720,
+      "with_ocr_text": 1636,
+      "with_clip_features": 1720
+    },
+    {
+      "category": "Легковоспламеняющиеся",
+      "label": 1,
+      "rows": 198,
+      "with_images": 62,
+      "with_ocr_text": 62,
+      "with_clip_features": 62
+    }
+  ],
+  "sha256": {
+    "train_data.csv": "4bc59e640563160fa04572b570606ceb1dd3d31627c6cf7fd1750ae4ea61f510",
+    "train_ocr.csv": "ff1e6da4f70d3265d1028ac5fd5c04f03c93e4f077e773912742792cf3c7c925",
+    "train_vision.npz": "1cf1a396fabce783de9372c2e42ac7cbdffdc274eabebe817201d46fc6d96061"
+  }
+}
