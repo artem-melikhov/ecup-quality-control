@@ -19,9 +19,9 @@ dependencies = [
 models = ["torch", "transformers", "accelerate", "huggingface-hub"]
 
 [project.scripts]
-ecup-quality = "ecup_quality.pipeline:main"
-ecup-ocr = "ecup_quality.ocr:main"
-ecup-vision = "ecup_quality.vision:main"
+ecup-quality = "src.pipeline:main"
+ecup-ocr = "src.ocr:main"
+ecup-vision = "src.vision:main"
 
-[tool.setuptools.packages.find]
-where = ["src"]
+[tool.setuptools]
+packages = ["src"]

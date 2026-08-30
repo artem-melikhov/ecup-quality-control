@@ -23,7 +23,7 @@ def build_submission(root, destination):
         'models/clip/config.json': root / 'models/clip/config.json',
         'models/clip/preprocessor_config.json': root / 'models/clip/preprocessor_config.json',
     }
-    package = root / 'src/ecup_quality'
+    package = root / 'src'
     for source in package.rglob('*.py'):
         files[str(source.relative_to(root))] = source
     for name in ['__init__.py', '__main__.py', 'pipeline.py', 'paths.py', 'ocr.py', 'vision.py', 'prompts.py']:

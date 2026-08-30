@@ -2,7 +2,7 @@
 import os
 from pathlib import Path
 
-ROOT = Path(os.environ.get('ECUP_PROJECT_ROOT', Path(__file__).resolve().parents[2])).resolve()
+ROOT = Path(os.environ.get('ECUP_PROJECT_ROOT', Path(__file__).resolve().parents[1])).resolve()
 CONFIGS = ROOT / 'configs'
 RAW_DATA = ROOT / 'data' / 'raw'
 PROCESSED_DATA = ROOT / 'data' / 'processed'

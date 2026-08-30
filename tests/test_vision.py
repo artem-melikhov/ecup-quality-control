@@ -9,9 +9,9 @@ import numpy as np
 import pandas as pd
 from PIL import Image
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
-from ecup_quality import vision
-from ecup_quality import pipeline as run
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from src import vision
+from src import pipeline as run
 
 
 def vector(index):
@@ -27,7 +27,7 @@ class VisionTests(unittest.TestCase):
         self.root = Path(self.temporary.name)
 
     def encoder(self, batch_size=2):
-        with patch('ecup_quality.vision.model_fingerprint', return_value='test-signature'):
+        with patch('src.vision.model_fingerprint', return_value='test-signature'):
             return vision.CLIPEncoder(self.root / 'model', self.root / 'cache', 'cpu', batch_size)
 
     def image(self, item_id, filename, color):
@@ -138,7 +138,7 @@ class VisionTests(unittest.TestCase):
                                   clip_model_path='local-model', train_vision_path=str(path),
                                   vision_cache_dir=str(self.root / 'cache'), vision_device='cpu',
                                   vision_batch_size=2, vision_time_budget=1)
-        with patch('ecup_quality.pipeline.load_local_config', return_value={}), patch('ecup_quality.pipeline.CLIPEncoder') as factory:
+        with patch('src.pipeline.load_local_config', return_value={}), patch('src.pipeline.CLIPEncoder') as factory:
             encoder = factory.return_value
             encoder.signature = 'signature'
             encoder.extract.return_value = (np.stack([vector(1)]), np.array([True]))
@@ -156,7 +156,7 @@ class VisionTests(unittest.TestCase):
                                   vision_device='cpu', vision_batch_size=2)
         train = pd.DataFrame({'id': [1], 'label': [0], 'category': ['БАД']})
         test = train.drop(columns='label')
-        with patch('ecup_quality.pipeline.load_local_config', return_value={}):
+        with patch('src.pipeline.load_local_config', return_value={}):
             self.assertTrue(np.isnan(run.attach_vision(train, test, args, lambda _: None)).all())
             args.vision = 'required'
             with self.assertRaises(ValueError):
@@ -170,9 +170,9 @@ class VisionTests(unittest.TestCase):
         output = self.root / 'result.csv'
         args = ['run.py', '-i', 'test.csv', '-o', str(output), '--ocr', 'off',
                 '--vision', 'required', '--vision-weight', '1']
-        with patch.object(sys, 'argv', args), patch('ecup_quality.pipeline.pd.read_csv', side_effect=[train, test]), \
-                patch('ecup_quality.pipeline.tfidf_blocks_nb', return_value=np.array([.9, .8, .2, .1])), \
-                patch('ecup_quality.pipeline.attach_vision', return_value=np.array([0., .8, .9, 1.])):
+        with patch.object(sys, 'argv', args), patch('src.pipeline.pd.read_csv', side_effect=[train, test]), \
+                patch('src.pipeline.tfidf_blocks_nb', return_value=np.array([.9, .8, .2, .1])), \
+                patch('src.pipeline.attach_vision', return_value=np.array([0., .8, .9, 1.])):
             run.main()
         result = pd.read_csv(output)
         self.assertTrue(result.loc[0, 'result'].endswith('<вердикт>бан'))

@@ -27,7 +27,7 @@ class SubmissionTests(unittest.TestCase):
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_bytes(b'fixture')
         for name in ['__init__.py', '__main__.py', 'pipeline.py', 'paths.py', 'ocr.py', 'vision.py', 'prompts.py']:
-            path = self.root / 'src/ecup_quality' / name
+            path = self.root / 'src' / name
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text('')
         (self.root / 'configs/submission.json').write_text(json.dumps({
@@ -40,7 +40,7 @@ class SubmissionTests(unittest.TestCase):
             names = archive.namelist()
             self.assertIn('run.py', names)
             self.assertIn('metadata.json', names)
-            self.assertIn('src/ecup_quality/pipeline.py', names)
+            self.assertIn('src/pipeline.py', names)
             self.assertIn('data/processed/train_vision.npz', names)
             self.assertIn('models/clip/pytorch_model.bin', names)
             self.assertNotIn('configs/local.json', names)

@@ -12,9 +12,9 @@ import numpy as np
 import pandas as pd
 from PIL import Image
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
-from ecup_quality import ocr
-from ecup_quality import pipeline as run
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from src import ocr
+from src import pipeline as run
 
 TSV = ('level\tpage_num\tblock_num\tpar_num\tline_num\tword_num\tleft\ttop\twidth\theight\tconf\ttext\n'
        '5\t1\t1\t1\t1\t1\t0\t0\t10\t10\t90\tбез\n'
@@ -33,7 +33,7 @@ class OCRTests(unittest.TestCase):
             if '--version' in args:
                 text = 'tesseract test\n'
             return subprocess.CompletedProcess(args, 0, text, '')
-        with patch('ecup_quality.ocr.shutil.which', return_value='/fake/tesseract'), patch('ecup_quality.ocr.subprocess.run', side_effect=startup):
+        with patch('src.ocr.shutil.which', return_value='/fake/tesseract'), patch('src.ocr.subprocess.run', side_effect=startup):
             return ocr.ImageOCR(self.root / 'cache', languages='eng', workers=2)
 
     def image(self, item_id=1, name='0.jpg', color='white'):
@@ -53,7 +53,7 @@ class OCRTests(unittest.TestCase):
         path = self.image()
         engine = self.engine()
         result = subprocess.CompletedProcess([], 0, TSV.encode(), b'')
-        with patch('ecup_quality.ocr.subprocess.run', return_value=result) as recognize:
+        with patch('src.ocr.subprocess.run', return_value=result) as recognize:
             self.assertEqual(engine.read_image(path, time.monotonic() + 10), ('без газа', 'recognized'))
             self.assertEqual(engine.read_image(path, time.monotonic() + 10), ('без газа', 'cached'))
             self.assertEqual(recognize.call_count, 1)
@@ -66,7 +66,7 @@ class OCRTests(unittest.TestCase):
         path = self.image()
         broken = self.image(2)
         broken.write_bytes(b'not an image')
-        with patch('ecup_quality.ocr.subprocess.run', side_effect=subprocess.TimeoutExpired('tesseract', 1)):
+        with patch('src.ocr.subprocess.run', side_effect=subprocess.TimeoutExpired('tesseract', 1)):
             self.assertEqual(engine.read_image(path, time.monotonic() + 10)[1], 'timeout')
         self.assertEqual(engine.read_image(broken, time.monotonic() + 10)[1], 'error')
         self.assertEqual(engine.read_image(path, time.monotonic() - 1)[1], 'deadline')
@@ -87,7 +87,7 @@ class OCRTests(unittest.TestCase):
             with Image.open(io.BytesIO(kwargs['input'])) as prepared:
                 self.assertEqual(prepared.size, (800, 1600))
             return subprocess.CompletedProcess(args, 0, TSV.encode(), b'')
-        with patch('ecup_quality.ocr.subprocess.run', side_effect=recognize):
+        with patch('src.ocr.subprocess.run', side_effect=recognize):
             self.assertEqual(engine.read_image(path, time.monotonic() + 10)[1], 'recognized')
 
     def test_paths_and_no_symlink_escape(self):
@@ -142,7 +142,7 @@ class OCRTests(unittest.TestCase):
                                   images_path=str(self.root / 'images'), train_images_path=None,
                                   train_ocr_path=str(training_csv), ocr_cache_dir=str(self.root / 'cache'),
                                   tessdata_dir=None, ocr_languages='rus+eng', ocr_workers=1, ocr_time_budget=1)
-        with patch('ecup_quality.pipeline.load_local_config', return_value={}), patch('ecup_quality.pipeline.ImageOCR') as engine:
+        with patch('src.pipeline.load_local_config', return_value={}), patch('src.pipeline.ImageOCR') as engine:
             engine.return_value.collect.return_value = ['БАД на фото теста']
             run.attach_ocr(train, test, args, lambda _: None)
             self.assertEqual(train['ocr_text'].tolist(), ['', 'Витамины на упаковке'])
@@ -157,7 +157,7 @@ class OCRTests(unittest.TestCase):
                                   images_path=str(self.root / 'images'), train_images_path=None, train_ocr_path=None,
                                   ocr_cache_dir=str(self.root / 'cache'), tessdata_dir=None,
                                   ocr_languages='rus+eng', ocr_workers=1, ocr_time_budget=1)
-        with patch('ecup_quality.pipeline.load_local_config', return_value={}), patch('ecup_quality.pipeline.ImageOCR', side_effect=RuntimeError('missing')):
+        with patch('src.pipeline.load_local_config', return_value={}), patch('src.pipeline.ImageOCR', side_effect=RuntimeError('missing')):
             run.attach_ocr(train, test, args, lambda _: None)
             self.assertEqual(test.loc[0, 'ocr_text'], '')
             args.ocr = 'required'

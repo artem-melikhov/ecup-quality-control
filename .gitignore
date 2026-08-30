@@ -14,3 +14,6 @@ configs/local.json
 # Собранные архивы и результаты запусков.
 dist/
 outputs/
+
+# Временные файлы сборки Python-пакета.
+build/
